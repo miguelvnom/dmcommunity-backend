@@ -1,79 +1,141 @@
-const { Client, GatewayIntentBits } = require("discord.js");
+const { Client, GatewayIntentBits, Events } = require("discord.js");
 const express = require("express");
 
-// ===== CONFIG =====
-const BOT_TOKEN = "SEU_TOKEN_AQUI";
-const PORT = 3000;
+// ============================================
+// CONFIG
+// ============================================
+const CONFIG = {
+  BOT_TOKEN: process.env.BOT_TOKEN, // VEM DO RENDER
+  GUILD_ID: "1454509523753636025",
+  ALLOWED_ROLES: [
+    "1454516302898135284",
+    "1454516493982371882",
+    "1454515294910283969",
+    "145451696587486424",
+    "1454509574907367486"
+  ],
+  PREFIX: "!",
+  CODE_EXPIRE_MS: 5 * 60 * 1000 // 5 minutos
+};
 
-// cargos permitidos
-const ALLOWED_ROLES = [
-  "1454516302898135284",
-  "1454516493982371882",
-  "1454515294910283969",
-  "145451696587486424",
-  "1454509574907367486"
-];
-
-// ===== BOT =====
+// ============================================
+// BOT
+// ============================================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages
   ]
 });
 
-const codes = {}; // guarda os códigos
+// Guarda códigos em memória (funciona no Render)
+const codes = {};
 
-client.on("ready", () => {
-  console.log("Bot online");
-});
-
-client.on("messageCreate", async (msg) => {
-  if (msg.author.bot) return;
-  if (msg.content !== "!verificar") return;
-
-  const member = await msg.guild.members.fetch(msg.author.id);
-  const hasRole = member.roles.cache.some(r =>
-    ALLOWED_ROLES.includes(r.id)
-  );
-
-  if (!hasRole) {
-    msg.reply("❌ Você não tem permissão.");
-    return;
+// Gera código aleatório
+function generateCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 8; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
   }
+  return code;
+}
 
-  const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-
-  codes[code] = {
-    used: false,
-    userId: msg.author.id
-  };
-
-  msg.author.send(
-    `✅ Seu código de acesso é:\n\n${code}\n\nUse no site.`
+// Checa cargos
+function hasAllowedRole(member) {
+  return member.roles.cache.some(role =>
+    CONFIG.ALLOWED_ROLES.includes(role.id)
   );
+}
+
+client.once(Events.ClientReady, () => {
+  console.log(`Bot conectado como ${client.user.tag}`);
+  console.log("Comando disponível: !verificar");
 });
 
-// ===== SITE API =====
+// Comando !verificar
+client.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot) return;
+  if (!message.content.startsWith(CONFIG.PREFIX)) return;
+
+  const command = message.content
+    .slice(CONFIG.PREFIX.length)
+    .trim()
+    .toLowerCase();
+
+  if (command !== "verificar") return;
+
+  try {
+    const guild = await client.guilds.fetch(CONFIG.GUILD_ID);
+    const member = await guild.members.fetch(message.author.id);
+
+    if (!hasAllowedRole(member)) {
+      return message.reply("❌ Você não tem permissão para acessar o site.");
+    }
+
+    // Remove códigos antigos do usuário
+    for (const c in codes) {
+      if (codes[c].userId === message.author.id) {
+        delete codes[c];
+      }
+    }
+
+    const code = generateCode();
+
+    codes[code] = {
+      userId: message.author.id,
+      expires: Date.now() + CONFIG.CODE_EXPIRE_MS,
+      used: false
+    };
+
+    await message.author.send(
+      `✅ **Acesso liberado ao DMCommunity!**\n\n` +
+      `Seu código de acesso:\n\n` +
+      `🔑 **${code}**\n\n` +
+      `Cole esse código no site para entrar.\n` +
+      `⏳ Válido por 5 minutos.`
+    );
+
+    if (message.guild) {
+      message.reply("✅ Código enviado no seu privado!");
+    }
+  } catch (err) {
+    console.error(err);
+    message.reply("❌ Erro ao verificar. Tente novamente.");
+  }
+});
+
+// ============================================
+// API PARA O SITE
+// ============================================
 const app = express();
 app.use(express.json());
 
 app.post("/check", (req, res) => {
   const { code } = req.body;
 
-  if (!codes[code] || codes[code].used) {
+  if (!code || !codes[code]) {
     return res.json({ ok: false });
   }
 
-  codes[code].used = true;
+  const data = codes[code];
+
+  if (data.used || Date.now() > data.expires) {
+    delete codes[code];
+    return res.json({ ok: false });
+  }
+
+  data.used = true;
   res.json({ ok: true });
 });
 
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Servidor rodando");
 });
 
-client.login(BOT_TOKEN);
+// ============================================
+client.login(CONFIG.BOT_TOKEN);
